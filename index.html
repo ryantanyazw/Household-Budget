@@ -58,6 +58,28 @@
       cache: { cacheLocation: "localStorage" }
     });
 
+msalInstance.handleRedirectPromise()
+  .then(async (resp) => {
+    if (resp) {
+      // user just came back from login
+    }
+    const acct = msalInstance.getAllAccounts()[0];
+    if (acct) {
+      accessToken = await getToken();
+      signedInEmail = (acct.username || "").toLowerCase();
+
+      const user = USERS[signedInEmail];
+      editableKey = user ? user.editableKey : null;
+
+      setStatus(user ? `${user.role}: ${signedInEmail}` : `VIEW ONLY: ${signedInEmail}`);
+      document.getElementById("roleHint").textContent =
+        user ? `You can edit the "${editableKey}" column only.` : "You are in view-only mode.";
+
+      document.getElementById("btnLoad").disabled = false;
+    }
+  })
+  .catch(err => alert(err.message));
+
     // Include identity scopes + Graph scopes
     const GRAPH_SCOPES = ["openid", "profile", "email", "User.Read", "Files.ReadWrite", "offline_access"];
 
@@ -86,7 +108,8 @@
     }
 
     async function signIn() {
-      await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
+  await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
+}
       accessToken = await getToken();
 
       const acct = msalInstance.getAllAccounts()[0];
@@ -204,7 +227,7 @@
     document.getElementById("btnLoad").onclick  = () => loadBudgetTable().catch(e => alert(e.message));
     document.getElementById("btnSave").onclick  = () => saveChanges().catch(e => alert(e.message));
 
-    msalInstance.handleRedirectPromise().catch(()=>{});
+    
   </script>
 </body>
 </html>
