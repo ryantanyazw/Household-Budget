@@ -109,7 +109,7 @@ msalInstance.handleRedirectPromise()
 
     async function signIn() {
   await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
-}
+
       accessToken = await getToken();
 
       const acct = msalInstance.getAllAccounts()[0];
