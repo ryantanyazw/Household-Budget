@@ -34,7 +34,6 @@
     // ----------------------------
     const clientId = "4493003b-30f9-4ba7-bb5f-0cff7184983f";
     const tableName = "BudgetTable";
-    const driveId   = "4ecb3f1cc1f2016"; // from your JSON
     const fileItemId = "4ECB3F1CC1F2016!s77fc9bdbb2ca4e4db58b65501ea3661f";
 
     // login.microsoftonline.com/consumers is the right authority for PERSONAL Microsoft accounts
@@ -109,27 +108,13 @@ msalInstance.handleRedirectPromise()
 
     async function signIn() {
   await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
-
-      accessToken = await getToken();
-
-      const acct = msalInstance.getAllAccounts()[0];
-      signedInEmail = (acct.username || "").toLowerCase();
-
-      const user = USERS[signedInEmail];
-      editableKey = user ? user.editableKey : null;
-
-      setStatus(user ? `${user.role}: ${signedInEmail}` : `VIEW ONLY: ${signedInEmail}`);
-      document.getElementById("roleHint").textContent =
-        user ? `You can edit the "${editableKey}" column only.` : "You are in view-only mode.";
-
-      document.getElementById("btnLoad").disabled = false;
     }
 
     // ----------------------------
     // Excel Table read/write
     // ----------------------------
     async function loadBudgetTable() {
-      const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileItemId}/workbook/tables/${tableName}/rows`;
+      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows`;
       const data = await graphGET(url);
 
       state.rows = data.value.map(r => r.values[0]);
