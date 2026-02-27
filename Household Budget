@@ -30,17 +30,19 @@
   <script src="https://alcdn.msauth.net/browser/2.38.1/js/msal-browser.min.js"></script>
   <script>
     // ----------------------------
-    // CONFIG (fill these in)
+    // CONFIG
     // ----------------------------
-    const tenantId = "7cc82b77-cd04-4809-9fdf-cb6f97cc9a73";
     const clientId = "4493003b-30f9-4ba7-bb5f-0cff7184983f";
-    const tableName = "BudgetTable";     // recommended
-    const fileItemId = "4ECB3F1CC1F2016!s77fc9bdbb2ca4e4db58b65501ea3661f"; // Graph driveItem id (OneDrive file id)
+    const tableName = "BudgetTable";
+    const fileItemId = "4ECB3F1CC1F2016!s77fc9bdbb2ca4e4db58b65501ea3661f";
 
-    // Which accounts map to which columns
+    // login.microsoftonline.com/consumers is the right authority for PERSONAL Microsoft accounts
+    const authority = "https://login.microsoftonline.com/consumers";
+
+    // Map accounts to edit permissions (edit your emails here)
     const USERS = {
-      "tchirovera@yahoo.com": { role: "TANYA", editableKey: "Tanya" },
-      "tsopoethel@gmail.com" "tchirovera@yahoo.com": { role: "ETHEL", editableKey: "Ethel" },
+      "tchirovera@yahoo.com":   { role: "TANYA", editableKey: "Tanya" },
+      "tsopoethel@gmail.com":   { role: "ETHEL", editableKey: "Ethel" },
     };
 
     // ----------------------------
@@ -49,28 +51,26 @@
     const msalInstance = new msal.PublicClientApplication({
       auth: {
         clientId,
-        authority: `https://login.microsoftonline.com/${tenantId}`,
+        authority,
         redirectUri: window.location.origin + window.location.pathname
       },
       cache: { cacheLocation: "localStorage" }
     });
 
-    const GRAPH_SCOPES = ["Files.ReadWrite", "offline_access"];
+    // Include identity scopes + Graph scopes
+    const GRAPH_SCOPES = ["openid", "profile", "email", "User.Read", "Files.ReadWrite", "offline_access"];
 
     let accessToken = null;
     let signedInEmail = null;
-    let editableKey = null;  // "Tanya" | "Ethel" | null
+    let editableKey = null;
 
-    const state = {
-      rows: [],        // table rows from Excel
-      dirty: new Map() // rowIndex -> updated values
-    };
+    const state = { rows: [], dirty: new Map() };
 
     function setStatus(text) { document.getElementById("who").textContent = text; }
 
     async function getToken() {
       const accounts = msalInstance.getAllAccounts();
-      if (!accounts.length) throw new Error("No account");
+      if (!accounts.length) throw new Error("No signed-in account found.");
       const resp = await msalInstance.acquireTokenSilent({
         account: accounts[0],
         scopes: GRAPH_SCOPES
@@ -84,22 +84,10 @@
       return res.json();
     }
 
-    async function graphPOST(url, body) {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
-      });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    }
-
     async function signIn() {
       await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
       accessToken = await getToken();
+
       const acct = msalInstance.getAllAccounts()[0];
       signedInEmail = (acct.username || "").toLowerCase();
 
@@ -114,17 +102,12 @@
     }
 
     // ----------------------------
-    // Excel Table read/write via Graph
+    // Excel Table read/write
     // ----------------------------
     async function loadBudgetTable() {
-      // Read rows from Excel table:
-      // GET /me/drive/items/{item-id}/workbook/tables/{tableName}/rows
       const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows`;
       const data = await graphGET(url);
 
-      // Each row contains "values": [[...columns...]]
-      // Your table columns should include something like:
-      // Item | PerMonth | Tanya | Ethel | Both | (and maybe Category)
       state.rows = data.value.map(r => r.values[0]);
       state.dirty.clear();
       render();
@@ -135,7 +118,7 @@
       const app = document.getElementById("app");
       if (!state.rows.length) { app.innerHTML = "<div class='muted'>No data loaded.</div>"; return; }
 
-      // Adjust these indices to match your table column order
+      // Adjust these indices to match your Excel table columns
       const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
 
       let html = `<table>
@@ -148,14 +131,13 @@
         </tr></thead><tbody>`;
 
       state.rows.forEach((row, i) => {
-        const canEditTanya = editableKey === "Tanya";
-        const canEditEthel = editableKey === "Ethel";
-        const canEditShared = editableKey !== null; // allow both (change if you want)
+        const canEditTanya  = editableKey === "Tanya";
+        const canEditEthel  = editableKey === "Ethel";
+        const canEditShared = editableKey !== null; // change if you want shared locked down
 
         html += `<tr>
           <td>${row[COL.Item] ?? ""}</td>
           <td>${fmt(row[COL.PerMonth])}</td>
-
           <td>${inputCell(i, "Tanya", row[COL.Tanya], canEditTanya)}</td>
           <td>${inputCell(i, "Ethel", row[COL.Ethel], canEditEthel)}</td>
           <td>${inputCell(i, "Both",  row[COL.Both],  canEditShared)}</td>
@@ -165,11 +147,10 @@
       html += `</tbody></table>`;
       app.innerHTML = html;
 
-      // attach listeners
       app.querySelectorAll("input[data-ri]").forEach(inp => {
         inp.addEventListener("input", (e) => {
           const ri = Number(e.target.dataset.ri);
-          const key = e.target.dataset.key; // "Tanya"|"Ethel"|"Both"
+          const key = e.target.dataset.key;
           const val = e.target.value === "" ? null : Number(e.target.value);
           const upd = state.dirty.get(ri) || {};
           upd[key] = val;
@@ -194,14 +175,6 @@
     async function saveChanges() {
       if (!state.dirty.size) { alert("No changes."); return; }
 
-      // For each changed row, patch that row’s values.
-      // Graph supports: PATCH /workbook/tables/{id|name}/rows/{index}
-      // using update: /workbook/tables/{name}/rows/itemAt(index)/range
-      //
-      // We'll use the "range" update endpoint to set specific columns.
-      // NOTE: easiest is to update entire row values at once.
-
-      // Adjust indices to match your table column order:
       const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
 
       for (const [ri, upd] of state.dirty.entries()) {
@@ -211,14 +184,12 @@
         if (upd.Both  !== undefined) row[COL.Both]  = upd.Both;
 
         const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows/itemAt(index=${ri})`;
-        await fetch(url, {
+        const res = await fetch(url, {
           method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json"
-          },
+          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ values: [row] })
-        }).then(async r => { if (!r.ok) throw new Error(await r.text()); });
+        });
+        if (!res.ok) throw new Error(await res.text());
 
         state.rows[ri] = row;
       }
@@ -228,14 +199,10 @@
       render();
     }
 
-    // ----------------------------
-    // Wire up buttons
-    // ----------------------------
     document.getElementById("btnLogin").onclick = () => signIn().catch(e => alert(e.message));
     document.getElementById("btnLoad").onclick  = () => loadBudgetTable().catch(e => alert(e.message));
     document.getElementById("btnSave").onclick  = () => saveChanges().catch(e => alert(e.message));
 
-    // Handle redirect/popup state
     msalInstance.handleRedirectPromise().catch(()=>{});
   </script>
 </body>
