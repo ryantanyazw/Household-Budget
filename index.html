@@ -1,0 +1,209 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Household Budget</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 24px; }
+    .row { display:flex; gap:12px; align-items:center; margin-bottom: 12px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background: #f6f6f6; text-align: left; }
+    input[type="number"] { width: 120px; }
+    .muted { color:#666; font-size: 0.9em; }
+    .pill { padding: 4px 10px; border-radius: 999px; background:#eee; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <button id="btnLogin">Sign in</button>
+    <button id="btnLoad" disabled>Load budget</button>
+    <button id="btnSave" disabled>Save changes</button>
+    <span id="who" class="pill">Not signed in</span>
+  </div>
+  <div class="muted" id="roleHint"></div>
+
+  <h2>Budget lines</h2>
+  <div id="app"></div>
+
+  <script src="https://alcdn.msauth.net/browser/2.38.1/js/msal-browser.min.js"></script>
+  <script>
+    // ----------------------------
+    // CONFIG
+    // ----------------------------
+    const clientId = "4493003b-30f9-4ba7-bb5f-0cff7184983f";
+    const tableName = "BudgetTable";
+    const fileItemId = "4ECB3F1CC1F2016!s77fc9bdbb2ca4e4db58b65501ea3661f";
+
+    // login.microsoftonline.com/consumers is the right authority for PERSONAL Microsoft accounts
+    const authority = "https://login.microsoftonline.com/consumers";
+
+    // Map accounts to edit permissions (edit your emails here)
+    const USERS = {
+      "tchirovera@yahoo.com":   { role: "TANYA", editableKey: "Tanya" },
+      "tsopoethel@gmail.com":   { role: "ETHEL", editableKey: "Ethel" },
+    };
+
+    // ----------------------------
+    // MSAL
+    // ----------------------------
+    const msalInstance = new msal.PublicClientApplication({
+      auth: {
+        clientId,
+        authority,
+        redirectUri: window.location.origin + window.location.pathname
+      },
+      cache: { cacheLocation: "localStorage" }
+    });
+
+    // Include identity scopes + Graph scopes
+    const GRAPH_SCOPES = ["openid", "profile", "email", "User.Read", "Files.ReadWrite", "offline_access"];
+
+    let accessToken = null;
+    let signedInEmail = null;
+    let editableKey = null;
+
+    const state = { rows: [], dirty: new Map() };
+
+    function setStatus(text) { document.getElementById("who").textContent = text; }
+
+    async function getToken() {
+      const accounts = msalInstance.getAllAccounts();
+      if (!accounts.length) throw new Error("No signed-in account found.");
+      const resp = await msalInstance.acquireTokenSilent({
+        account: accounts[0],
+        scopes: GRAPH_SCOPES
+      });
+      return resp.accessToken;
+    }
+
+    async function graphGET(url) {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function signIn() {
+      await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
+      accessToken = await getToken();
+
+      const acct = msalInstance.getAllAccounts()[0];
+      signedInEmail = (acct.username || "").toLowerCase();
+
+      const user = USERS[signedInEmail];
+      editableKey = user ? user.editableKey : null;
+
+      setStatus(user ? `${user.role}: ${signedInEmail}` : `VIEW ONLY: ${signedInEmail}`);
+      document.getElementById("roleHint").textContent =
+        user ? `You can edit the "${editableKey}" column only.` : "You are in view-only mode.";
+
+      document.getElementById("btnLoad").disabled = false;
+    }
+
+    // ----------------------------
+    // Excel Table read/write
+    // ----------------------------
+    async function loadBudgetTable() {
+      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows`;
+      const data = await graphGET(url);
+
+      state.rows = data.value.map(r => r.values[0]);
+      state.dirty.clear();
+      render();
+      document.getElementById("btnSave").disabled = false;
+    }
+
+    function render() {
+      const app = document.getElementById("app");
+      if (!state.rows.length) { app.innerHTML = "<div class='muted'>No data loaded.</div>"; return; }
+
+      // Adjust these indices to match your Excel table columns
+      const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
+
+      let html = `<table>
+        <thead><tr>
+          <th>Item</th>
+          <th>Per Month</th>
+          <th>Tanya</th>
+          <th>Ethel</th>
+          <th>Shared</th>
+        </tr></thead><tbody>`;
+
+      state.rows.forEach((row, i) => {
+        const canEditTanya  = editableKey === "Tanya";
+        const canEditEthel  = editableKey === "Ethel";
+        const canEditShared = editableKey !== null; // change if you want shared locked down
+
+        html += `<tr>
+          <td>${row[COL.Item] ?? ""}</td>
+          <td>${fmt(row[COL.PerMonth])}</td>
+          <td>${inputCell(i, "Tanya", row[COL.Tanya], canEditTanya)}</td>
+          <td>${inputCell(i, "Ethel", row[COL.Ethel], canEditEthel)}</td>
+          <td>${inputCell(i, "Both",  row[COL.Both],  canEditShared)}</td>
+        </tr>`;
+      });
+
+      html += `</tbody></table>`;
+      app.innerHTML = html;
+
+      app.querySelectorAll("input[data-ri]").forEach(inp => {
+        inp.addEventListener("input", (e) => {
+          const ri = Number(e.target.dataset.ri);
+          const key = e.target.dataset.key;
+          const val = e.target.value === "" ? null : Number(e.target.value);
+          const upd = state.dirty.get(ri) || {};
+          upd[key] = val;
+          state.dirty.set(ri, upd);
+        });
+      });
+    }
+
+    function inputCell(rowIndex, key, value, enabled) {
+      const v = (value ?? "");
+      const dis = enabled ? "" : "disabled";
+      return `<input type="number" step="0.01" value="${v}" ${dis}
+              data-ri="${rowIndex}" data-key="${key}">`;
+    }
+
+    function fmt(x) {
+      if (x === null || x === undefined || x === "") return "";
+      const n = Number(x);
+      return Number.isFinite(n) ? n.toFixed(2) : x;
+    }
+
+    async function saveChanges() {
+      if (!state.dirty.size) { alert("No changes."); return; }
+
+      const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
+
+      for (const [ri, upd] of state.dirty.entries()) {
+        const row = [...state.rows[ri]];
+        if (upd.Tanya !== undefined) row[COL.Tanya] = upd.Tanya;
+        if (upd.Ethel !== undefined) row[COL.Ethel] = upd.Ethel;
+        if (upd.Both  !== undefined) row[COL.Both]  = upd.Both;
+
+        const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows/itemAt(index=${ri})`;
+        const res = await fetch(url, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ values: [row] })
+        });
+        if (!res.ok) throw new Error(await res.text());
+
+        state.rows[ri] = row;
+      }
+
+      state.dirty.clear();
+      alert("Saved to OneDrive Excel ✅");
+      render();
+    }
+
+    document.getElementById("btnLogin").onclick = () => signIn().catch(e => alert(e.message));
+    document.getElementById("btnLoad").onclick  = () => loadBudgetTable().catch(e => alert(e.message));
+    document.getElementById("btnSave").onclick  = () => saveChanges().catch(e => alert(e.message));
+
+    msalInstance.handleRedirectPromise().catch(()=>{});
+  </script>
+</body>
+</html>
