@@ -28,191 +28,195 @@
   <div id="app"></div>
 
   <script src="https://alcdn.msauth.net/browser/2.38.1/js/msal-browser.min.js"></script>
-  <script>
-    // ----------------------------
-    // CONFIG
-    // ----------------------------
-    const clientId = "4493003b-30f9-4ba7-bb5f-0cff7184983f";
-    const tableName = "BudgetTable";
-    const fileItemId = "4ECB3F1CC1F2016!s77fc9bdbb2ca4e4db58b65501ea3661f";
+<script>
+  // ----------------------------
+  // CONFIG
+  // ----------------------------
+  const clientId = "4493003b-30f9-4ba7-bb5f-0cff7184983f";
+  const tableName = "BudgetTable";
+  const fileItemId = "4ECB3F1CC1F2016!s77fc9bdbb2ca4e4db58b65501ea3661f";
+  const authority = "https://login.microsoftonline.com/consumers";
 
-    // login.microsoftonline.com/consumers is the right authority for PERSONAL Microsoft accounts
-    const authority = "https://login.microsoftonline.com/consumers";
+  const USERS = {
+    "tchirovera@yahoo.com": { role: "TANYA", editableKey: "Tanya" },
+    "tsopoethel@gmail.com": { role: "ETHEL", editableKey: "Ethel" },
+  };
 
-    // Map accounts to edit permissions (edit your emails here)
-    const USERS = {
-      "tchirovera@yahoo.com":   { role: "TANYA", editableKey: "Tanya" },
-      "tsopoethel@gmail.com":   { role: "ETHEL", editableKey: "Ethel" },
-    };
+  const GRAPH_SCOPES = ["openid", "profile", "email", "User.Read", "Files.ReadWrite", "offline_access"];
 
-    // ----------------------------
-    // MSAL
-    // ----------------------------
-    const msalInstance = new msal.PublicClientApplication({
-      auth: {
-        clientId,
-        authority,
-        redirectUri: window.location.origin + window.location.pathname
-      },
-      cache: { cacheLocation: "localStorage" }
+  // ----------------------------
+  // STATE
+  // ----------------------------
+  let accessToken = null;
+  let signedInEmail = null;
+  let editableKey = null;
+
+  const state = { rows: [], dirty: new Map() };
+
+  function setStatus(text) {
+    document.getElementById("who").textContent = text;
+  }
+
+  // ----------------------------
+  // MSAL
+  // ----------------------------
+  const msalInstance = new msal.PublicClientApplication({
+    auth: {
+      clientId,
+      authority,
+      redirectUri: window.location.origin + window.location.pathname
+    },
+    cache: { cacheLocation: "localStorage" }
+  });
+
+  async function getToken() {
+    const accounts = msalInstance.getAllAccounts();
+    if (!accounts.length) throw new Error("No signed-in account found.");
+    const resp = await msalInstance.acquireTokenSilent({
+      account: accounts[0],
+      scopes: GRAPH_SCOPES
+    });
+    return resp.accessToken;
+  }
+
+  async function graphGET(url) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async function signIn() {
+    // redirect flow only — nothing after this runs
+    await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
+  }
+
+  async function initAfterLoginIfAny() {
+    await msalInstance.handleRedirectPromise().catch(() => null);
+
+    const acct = msalInstance.getAllAccounts()[0];
+    if (!acct) return;
+
+    accessToken = await getToken();
+    signedInEmail = (acct.username || "").toLowerCase();
+
+    const user = USERS[signedInEmail];
+    editableKey = user ? user.editableKey : null;
+
+    setStatus(user ? `${user.role}: ${signedInEmail}` : `VIEW ONLY: ${signedInEmail}`);
+    document.getElementById("roleHint").textContent =
+      user ? `You can edit the "${editableKey}" column only.` : "You are in view-only mode.";
+
+    document.getElementById("btnLoad").disabled = false;
+  }
+
+  // ----------------------------
+  // Excel Table read/write
+  // ----------------------------
+  async function loadBudgetTable() {
+    const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows`;
+    const data = await graphGET(url);
+
+    state.rows = data.value.map(r => r.values[0]);
+    state.dirty.clear();
+    render();
+    document.getElementById("btnSave").disabled = false;
+  }
+
+  function render() {
+    const app = document.getElementById("app");
+    if (!state.rows.length) {
+      app.innerHTML = "<div class='muted'>No data loaded.</div>";
+      return;
+    }
+
+    const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
+
+    let html = `<table>
+      <thead><tr>
+        <th>Item</th>
+        <th>Per Month</th>
+        <th>Tanya</th>
+        <th>Ethel</th>
+        <th>Shared</th>
+      </tr></thead><tbody>`;
+
+    state.rows.forEach((row, i) => {
+      const canEditTanya  = editableKey === "Tanya";
+      const canEditEthel  = editableKey === "Ethel";
+      const canEditShared = editableKey !== null;
+
+      html += `<tr>
+        <td>${row[COL.Item] ?? ""}</td>
+        <td>${fmt(row[COL.PerMonth])}</td>
+        <td>${inputCell(i, "Tanya", row[COL.Tanya], canEditTanya)}</td>
+        <td>${inputCell(i, "Ethel", row[COL.Ethel], canEditEthel)}</td>
+        <td>${inputCell(i, "Both",  row[COL.Both],  canEditShared)}</td>
+      </tr>`;
     });
 
-msalInstance.handleRedirectPromise()
-  .then(async (resp) => {
-    if (resp) {
-      // user just came back from login
-    }
-    const acct = msalInstance.getAllAccounts()[0];
-    if (acct) {
-      accessToken = await getToken();
-      signedInEmail = (acct.username || "").toLowerCase();
+    html += `</tbody></table>`;
+    app.innerHTML = html;
 
-      const user = USERS[signedInEmail];
-      editableKey = user ? user.editableKey : null;
-
-      setStatus(user ? `${user.role}: ${signedInEmail}` : `VIEW ONLY: ${signedInEmail}`);
-      document.getElementById("roleHint").textContent =
-        user ? `You can edit the "${editableKey}" column only.` : "You are in view-only mode.";
-
-      document.getElementById("btnLoad").disabled = false;
-    }
-  })
-  .catch(err => alert(err.message));
-
-    // Include identity scopes + Graph scopes
-    const GRAPH_SCOPES = ["openid", "profile", "email", "User.Read", "Files.ReadWrite", "offline_access"];
-
-    let accessToken = null;
-    let signedInEmail = null;
-    let editableKey = null;
-
-    const state = { rows: [], dirty: new Map() };
-
-    function setStatus(text) { document.getElementById("who").textContent = text; }
-
-    async function getToken() {
-      const accounts = msalInstance.getAllAccounts();
-      if (!accounts.length) throw new Error("No signed-in account found.");
-      const resp = await msalInstance.acquireTokenSilent({
-        account: accounts[0],
-        scopes: GRAPH_SCOPES
+    app.querySelectorAll("input[data-ri]").forEach(inp => {
+      inp.addEventListener("input", (e) => {
+        const ri = Number(e.target.dataset.ri);
+        const key = e.target.dataset.key;
+        const val = e.target.value === "" ? null : Number(e.target.value);
+        const upd = state.dirty.get(ri) || {};
+        upd[key] = val;
+        state.dirty.set(ri, upd);
       });
-      return resp.accessToken;
-    }
+    });
+  }
 
-    async function graphGET(url) {
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  function inputCell(rowIndex, key, value, enabled) {
+    const v = (value ?? "");
+    const dis = enabled ? "" : "disabled";
+    return `<input type="number" step="0.01" value="${v}" ${dis} data-ri="${rowIndex}" data-key="${key}">`;
+  }
+
+  function fmt(x) {
+    if (x === null || x === undefined || x === "") return "";
+    const n = Number(x);
+    return Number.isFinite(n) ? n.toFixed(2) : x;
+  }
+
+  async function saveChanges() {
+    if (!state.dirty.size) { alert("No changes."); return; }
+
+    const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
+
+    for (const [ri, upd] of state.dirty.entries()) {
+      const row = [...state.rows[ri]];
+      if (upd.Tanya !== undefined) row[COL.Tanya] = upd.Tanya;
+      if (upd.Ethel !== undefined) row[COL.Ethel] = upd.Ethel;
+      if (upd.Both  !== undefined) row[COL.Both]  = upd.Both;
+
+      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows/itemAt(index=${ri})`;
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [row] })
+      });
       if (!res.ok) throw new Error(await res.text());
-      return res.json();
+
+      state.rows[ri] = row;
     }
 
-    async function signIn() {
-  await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
-    }
+    state.dirty.clear();
+    alert("Saved to OneDrive Excel ✅");
+    render();
+  }
 
-    // ----------------------------
-    // Excel Table read/write
-    // ----------------------------
-    async function loadBudgetTable() {
-      const url = `https://graph.microsoft.com/v1.0/me/drive/items/${fileItemId}/workbook/tables/${tableName}/rows`;
-      const data = await graphGET(url);
+  // ----------------------------
+  // Wire up UI
+  // ----------------------------
+  document.getElementById("btnLogin").onclick = () => signIn().catch(e => alert(e.message));
+  document.getElementById("btnLoad").onclick  = () => loadBudgetTable().catch(e => alert(e.message));
+  document.getElementById("btnSave").onclick  = () => saveChanges().catch(e => alert(e.message));
 
-      state.rows = data.value.map(r => r.values[0]);
-      state.dirty.clear();
-      render();
-      document.getElementById("btnSave").disabled = false;
-    }
-
-    function render() {
-      const app = document.getElementById("app");
-      if (!state.rows.length) { app.innerHTML = "<div class='muted'>No data loaded.</div>"; return; }
-
-      // Adjust these indices to match your Excel table columns
-      const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
-
-      let html = `<table>
-        <thead><tr>
-          <th>Item</th>
-          <th>Per Month</th>
-          <th>Tanya</th>
-          <th>Ethel</th>
-          <th>Shared</th>
-        </tr></thead><tbody>`;
-
-      state.rows.forEach((row, i) => {
-        const canEditTanya  = editableKey === "Tanya";
-        const canEditEthel  = editableKey === "Ethel";
-        const canEditShared = editableKey !== null; // change if you want shared locked down
-
-        html += `<tr>
-          <td>${row[COL.Item] ?? ""}</td>
-          <td>${fmt(row[COL.PerMonth])}</td>
-          <td>${inputCell(i, "Tanya", row[COL.Tanya], canEditTanya)}</td>
-          <td>${inputCell(i, "Ethel", row[COL.Ethel], canEditEthel)}</td>
-          <td>${inputCell(i, "Both",  row[COL.Both],  canEditShared)}</td>
-        </tr>`;
-      });
-
-      html += `</tbody></table>`;
-      app.innerHTML = html;
-
-      app.querySelectorAll("input[data-ri]").forEach(inp => {
-        inp.addEventListener("input", (e) => {
-          const ri = Number(e.target.dataset.ri);
-          const key = e.target.dataset.key;
-          const val = e.target.value === "" ? null : Number(e.target.value);
-          const upd = state.dirty.get(ri) || {};
-          upd[key] = val;
-          state.dirty.set(ri, upd);
-        });
-      });
-    }
-
-    function inputCell(rowIndex, key, value, enabled) {
-      const v = (value ?? "");
-      const dis = enabled ? "" : "disabled";
-      return `<input type="number" step="0.01" value="${v}" ${dis}
-              data-ri="${rowIndex}" data-key="${key}">`;
-    }
-
-    function fmt(x) {
-      if (x === null || x === undefined || x === "") return "";
-      const n = Number(x);
-      return Number.isFinite(n) ? n.toFixed(2) : x;
-    }
-
-    async function saveChanges() {
-      if (!state.dirty.size) { alert("No changes."); return; }
-
-      const COL = { Item: 0, PerMonth: 1, Tanya: 2, Ethel: 3, Both: 4 };
-
-      for (const [ri, upd] of state.dirty.entries()) {
-        const row = [...state.rows[ri]];
-        if (upd.Tanya !== undefined) row[COL.Tanya] = upd.Tanya;
-        if (upd.Ethel !== undefined) row[COL.Ethel] = upd.Ethel;
-        if (upd.Both  !== undefined) row[COL.Both]  = upd.Both;
-
-        const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileItemId}/workbook/tables/${tableName}/rows/itemAt(index=${ri})`;
-        const res = await fetch(url, {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ values: [row] })
-        });
-        if (!res.ok) throw new Error(await res.text());
-
-        state.rows[ri] = row;
-      }
-
-      state.dirty.clear();
-      alert("Saved to OneDrive Excel ✅");
-      render();
-    }
-
-    document.getElementById("btnLogin").onclick = () => signIn().catch(e => alert(e.message));
-    document.getElementById("btnLoad").onclick  = () => loadBudgetTable().catch(e => alert(e.message));
-    document.getElementById("btnSave").onclick  = () => saveChanges().catch(e => alert(e.message));
-
-    
-  </script>
+  // Run once on page load
+  initAfterLoginIfAny().catch(e => alert(e.message));
+</script>
 </body>
 </html>
